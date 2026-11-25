@@ -8,3 +8,8 @@
     @android.webkit.JavascriptInterface <methods>;
 }
 -keepattributes JavascriptInterface
+
+# Decoder and HDR answers for YouTube's player: the page calls these through the MyYtMedia bridge.
+-keepclassmembers class com.myyt.tv.MediaCaps {
+    @android.webkit.JavascriptInterface <methods>;
+}

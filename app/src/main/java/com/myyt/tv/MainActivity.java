@@ -32,6 +32,17 @@ import java.util.Map;
 public final class MainActivity extends Activity {
     static final String HOME_URL = "https://www.youtube.com/tv";
     /**
+     * Switches in the address that YouTube's TV app reads before the server's settings for this identity (tested
+     * 2026-11-25). The server sends "force_voice_incapable", which hides the mic button on the search screen: the first
+     * two bring it back, recording through the Web Speech API (Voice.POLYFILL). It also sends
+     * "force_memory_saving_mode", which drops the gradients behind cards and the player controls and uses small
+     * thumbnails: env_isLimitedAnimation keeps the full look with animations still off, for weak boxes.
+     */
+    static final String START_URL = HOME_URL + "?env_enableSoftMic=true&env_enableWebSpeech=true&env_isLimitedAnimation=true";
+
+    /** Runs in YouTube's pages before their own code: decoder/HDR answers and the look (MediaCaps), then voice. */
+    static final String PAGE_SCRIPT = MediaCaps.SCRIPT + "\n" + Voice.POLYFILL;
+    /**
      * youtube.com/tv only opens for TV browsers; others are sent to the desktop site. A Samsung (Tizen) identity gets
      * clear (non-DRM) streams that start at once with the ad scriptlets on. The official Android TV (Cobalt) identity
      * would show YouTube's own mic button, but it is served Widevine streams and, with ads stripped, waits ~25 s before
@@ -80,6 +91,7 @@ public final class MainActivity extends Activity {
         // Voice search: the page's mic button and the remote's mic key (see Voice).
         voice = new Voice(this, web);
         web.addJavascriptInterface(voice, Voice.BRIDGE);
+        web.addJavascriptInterface(new MediaCaps(this), MediaCaps.BRIDGE);
         installVoiceScript();
 
         web.setWebViewClient(new Client());
@@ -88,6 +100,13 @@ public final class MainActivity extends Activity {
         web.setFocusableInTouchMode(true);
         web.requestFocus();
 
+        // Ask for the microphone on the first start, and open YouTube only once it is answered. YouTube decides whether
+        // to show its mic button while the page starts: if the page loads while the permission dialog is still open,
+        // its own microphone check is refused and the button stays hidden.
+        savedState = state;
+        waitingForFirstMic = state == null && !hasMic();
+        if (waitingForFirstMic) askForMic();
+
         // Load the engine first (about a second on this box), then the site, so the first page is filtered too.
         new Thread(() -> {
             boolean ok = AdBlock.load(getApplicationContext());
@@ -95,20 +114,40 @@ public final class MainActivity extends Activity {
             main.post(() -> {
                 if (!ok) Toast.makeText(this, "Ad blocker could not start; opening without it", Toast.LENGTH_LONG).show();
                 installYouTubeScript(ytScript);
-                String query = searchQuery(getIntent());
-                if (state == null) web.loadUrl(query == null ? HOME_URL : HOME_URL + "#/search?q=" + android.net.Uri.encode(query));
-                else web.restoreState(state);
+                engineReady = true;
+                openSiteIfReady();
             });
         }, "adblock-load").start();
-
-        // Ask for the microphone on the first start, so voice search is ready the first time the mic button is pressed.
-        if (state == null && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
-                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQ_FIRST_MIC);
-        }
     }
 
-    private static final int REQ_FIRST_MIC = 44;
+    private static final int REQ_MIC_DIALOG = 44;
+    private Bundle savedState;
+    private boolean engineReady, siteOpened, waitingForFirstMic;
+    /** True while Android's microphone dialog is on screen; a second request then would be cancelled at once. */
+    private boolean micDialogOpen;
+
+    boolean hasMic() {
+        return checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** Shows Android's microphone dialog, unless it is already showing; every waiter is answered in onRequestPermissionsResult. */
+    void askForMic() {
+        if (micDialogOpen) return;
+        micDialogOpen = true;
+        requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQ_MIC_DIALOG);
+    }
+
+    /** Opens YouTube once the ad blocker is loaded and the first-start microphone question is answered. */
+    private void openSiteIfReady() {
+        if (siteOpened || !engineReady || waitingForFirstMic) return;
+        siteOpened = true;
+        String query = searchQuery(getIntent());
+        if (savedState == null) web.loadUrl(query == null ? START_URL : START_URL + "#/search?q=" + android.net.Uri.encode(query));
+        else web.restoreState(savedState);
+        savedState = null;
+    }
+
 
     /** The VancedYT-TV activity while it is on screen, for MicKeyService; null otherwise. */
     static volatile MainActivity resumed;
@@ -159,7 +198,7 @@ public final class MainActivity extends Activity {
     private void installVoiceScript() {
         if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
             try {
-                androidx.webkit.WebViewCompat.addDocumentStartJavaScript(web, Voice.POLYFILL,
+                androidx.webkit.WebViewCompat.addDocumentStartJavaScript(web, PAGE_SCRIPT,
                         java.util.Collections.singleton("https://www.youtube.com"));
                 voiceStartScript = true;
             } catch (RuntimeException ignored) {
@@ -167,36 +206,41 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private static final int REQ_PAGE_MIC = 43;
     /** The page's microphone request, waiting for the Android permission. */
     private android.webkit.PermissionRequest pendingMicRequest;
     private java.util.List<String> pendingGrant;
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        if (requestCode == REQ_FIRST_MIC) {
-            if (grantResults.length > 0 && grantResults[0] != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+        if (requestCode != REQ_MIC_DIALOG) {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+            return;
+        }
+        micDialogOpen = false;
+        // The real state, not grantResults: those are empty when Android cancels a request.
+        boolean granted = hasMic();
+
+        // The page's own microphone request (getUserMedia).
+        android.webkit.PermissionRequest r = pendingMicRequest;
+        pendingMicRequest = null;
+        java.util.List<String> grant = pendingGrant == null ? new java.util.ArrayList<>() : pendingGrant;
+        pendingGrant = null;
+        if (r != null) {
+            if (granted) grant.add(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE);
+            if (grant.isEmpty()) r.deny();
+            else r.grant(grant.toArray(new String[0]));
+        }
+
+        // A voice search waiting for the microphone.
+        voice.onMicAnswer(granted);
+
+        if (waitingForFirstMic) {
+            waitingForFirstMic = false;
+            if (!granted) {
                 Toast.makeText(this, "Voice search needs the microphone. It will ask again when you press the mic.",
                         Toast.LENGTH_LONG).show();
             }
-            return;
-        }
-        if (requestCode == REQ_PAGE_MIC) {
-            android.webkit.PermissionRequest r = pendingMicRequest;
-            pendingMicRequest = null;
-            java.util.List<String> grant = pendingGrant == null ? new java.util.ArrayList<>() : pendingGrant;
-            pendingGrant = null;
-            if (r != null) {
-                if (grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                    grant.add(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE);
-                }
-                if (grant.isEmpty()) r.deny();
-                else r.grant(grant.toArray(new String[0]));
-            }
-            return;
-        }
-        if (!voice.onPermissionResult(requestCode, grantResults)) {
-            super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+            openSiteIfReady();
         }
     }
 
@@ -343,7 +387,7 @@ public final class MainActivity extends Activity {
                 if (!script.isEmpty()) view.evaluateJavascript(script, null);
             }
             if (!voiceStartScript && url != null && url.startsWith("https://www.youtube.com")) {
-                view.evaluateJavascript(Voice.POLYFILL, null);
+                view.evaluateJavascript(PAGE_SCRIPT, null);
             }
         }
 
@@ -352,7 +396,7 @@ public final class MainActivity extends Activity {
             pageUrl = url;
             injectHideCss(url);
             if (!voiceStartScript && url != null && url.startsWith("https://www.youtube.com")) {
-                view.evaluateJavascript(Voice.POLYFILL, null);
+                view.evaluateJavascript(PAGE_SCRIPT, null);
             }
         }
 
@@ -443,11 +487,11 @@ public final class MainActivity extends Activity {
                 if (android.webkit.PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID.equals(r)) grant.add(r);
                 if (android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) wantsMic = true;
             }
-            if (wantsMic && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
-                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            if (wantsMic && !hasMic()) {
+                if (pendingMicRequest != null) pendingMicRequest.deny();   // superseded
                 pendingMicRequest = request;
                 pendingGrant = grant;
-                requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQ_PAGE_MIC);
+                askForMic();
                 return;
             }
             if (wantsMic) grant.add(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE);
