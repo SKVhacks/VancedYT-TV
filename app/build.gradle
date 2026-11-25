@@ -11,9 +11,9 @@ android {
         minSdk 26
         targetSdk 34
         versionCode 10
-        versionName '1.9'
+        versionName '1.9-mobiletest'
         ndk {
-            abiFilters 'armeabi-v7a'   // the Airtel Xstream box is 32-bit ARM
+            abiFilters 'armeabi-v7a', 'arm64-v8a'   // TEST BUILD: phones too (TV box is 32-bit ARM)
         }
     }
 
