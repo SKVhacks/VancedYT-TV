@@ -32,6 +32,12 @@ import java.util.Map;
 public final class MainActivity extends Activity {
     static final String HOME_URL = "https://www.youtube.com/tv";
     /**
+     * YouTube's server now sends the Samsung (Tizen) identity a "force_voice_incapable" flag, which hides the mic button
+     * on the search screen whatever the device has. These switches in the address are read by YouTube's TV app before
+     * that flag (tested 2026-11-25): the mic button shows again and records through the Web Speech API (Voice.POLYFILL).
+     */
+    static final String START_URL = HOME_URL + "?env_enableSoftMic=true&env_enableWebSpeech=true";
+    /**
      * youtube.com/tv only opens for TV browsers; others are sent to the desktop site. A Samsung (Tizen) identity gets
      * clear (non-DRM) streams that start at once with the ad scriptlets on. The official Android TV (Cobalt) identity
      * would show YouTube's own mic button, but it is served Widevine streams and, with ads stripped, waits ~25 s before
@@ -113,8 +119,6 @@ public final class MainActivity extends Activity {
     private boolean engineReady, siteOpened, waitingForFirstMic;
     /** True while Android's microphone dialog is on screen; a second request then would be cancelled at once. */
     private boolean micDialogOpen;
-    /** The page was opened without the microphone, so YouTube hid its mic button; reload once it is granted. */
-    private boolean pageWithoutMic;
 
     boolean hasMic() {
         return checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
@@ -132,19 +136,12 @@ public final class MainActivity extends Activity {
     private void openSiteIfReady() {
         if (siteOpened || !engineReady || waitingForFirstMic) return;
         siteOpened = true;
-        pageWithoutMic = !hasMic();
         String query = searchQuery(getIntent());
-        if (savedState == null) web.loadUrl(query == null ? HOME_URL : HOME_URL + "#/search?q=" + android.net.Uri.encode(query));
+        if (savedState == null) web.loadUrl(query == null ? START_URL : START_URL + "#/search?q=" + android.net.Uri.encode(query));
         else web.restoreState(savedState);
         savedState = null;
     }
 
-    /** The microphone was granted after the page opened: reload so YouTube shows its mic button. */
-    private void reloadForMic() {
-        if (!siteOpened || !pageWithoutMic || !hasMic() || voice.pageIsWaitingForMic()) return;
-        pageWithoutMic = false;
-        web.reload();
-    }
 
     /** The VancedYT-TV activity while it is on screen, for MicKeyService; null otherwise. */
     static volatile MainActivity resumed;
@@ -229,7 +226,7 @@ public final class MainActivity extends Activity {
         }
 
         // A voice search waiting for the microphone.
-        boolean voiceWaited = voice.onMicAnswer(granted);
+        voice.onMicAnswer(granted);
 
         if (waitingForFirstMic) {
             waitingForFirstMic = false;
@@ -238,8 +235,6 @@ public final class MainActivity extends Activity {
                         Toast.LENGTH_LONG).show();
             }
             openSiteIfReady();
-        } else if (granted && !voiceWaited) {
-            reloadForMic();
         }
     }
 
@@ -260,8 +255,6 @@ public final class MainActivity extends Activity {
         resumed = this;
         web.onResume();
         web.resumeTimers();
-        // Granted while the app was away (Settings, or adb shell pm grant): bring YouTube's mic button back.
-        if (!micDialogOpen) reloadForMic();
     }
 
     @Override
