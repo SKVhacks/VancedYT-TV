@@ -10,8 +10,8 @@ android {
         applicationId 'com.myyt.tv'
         minSdk 26
         targetSdk 34
-        versionCode 9
-        versionName '1.8'
+        versionCode 10
+        versionName '1.9'
         ndk {
             abiFilters 'armeabi-v7a'   // the Airtel Xstream box is 32-bit ARM
         }

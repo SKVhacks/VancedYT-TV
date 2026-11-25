@@ -1,10 +1,8 @@
 package com.myyt.tv;
 
-import android.Manifest;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -27,12 +25,11 @@ import java.util.ArrayList;
  */
 final class Voice {
     static final String BRIDGE = "MyYtVoice";
-    static final int REQ_MIC = 41;
     static final int REQ_SPEECH = 42;
     /** Session id used for searches started from the remote's key rather than by the page. */
     private static final int KEY_SESSION = -1;
 
-    private final Activity activity;
+    private final MainActivity activity;
     private final WebView web;
     private final Handler main = new Handler(Looper.getMainLooper());
     private SpeechRecognizer recognizer;
@@ -44,7 +41,7 @@ final class Voice {
     private String pendingLang;
     private boolean pendingInterim;
 
-    Voice(Activity activity, WebView web) {
+    Voice(MainActivity activity, WebView web) {
         this.activity = activity;
         this.web = web;
     }
@@ -54,6 +51,12 @@ final class Voice {
     @JavascriptInterface
     public void start(int id, String lang, boolean interimResults) {
         main.post(() -> begin(id, lang, interimResults));
+    }
+
+    /** For the page's permission check: is the microphone already granted? */
+    @JavascriptInterface
+    public boolean hasMic() {
+        return activity.hasMic();
     }
 
     @JavascriptInterface
@@ -92,12 +95,17 @@ final class Voice {
         recognizer = null;
     }
 
-    boolean onPermissionResult(int requestCode, int[] grants) {
-        if (requestCode != REQ_MIC) return false;
+    /** True while a search started by the page's mic button waits for the permission (a reload would lose it). */
+    boolean pageIsWaitingForMic() {
+        return pendingId > 0;
+    }
+
+    /** The answer to the microphone dialog; returns true if a voice search was waiting for it. */
+    boolean onMicAnswer(boolean granted) {
         int id = pendingId;
         pendingId = 0;
-        if (id == 0) return true;
-        if (grants.length > 0 && grants[0] == PackageManager.PERMISSION_GRANTED) {
+        if (id == 0) return false;
+        if (granted) {
             begin(id, pendingLang, pendingInterim);
         } else {
             send(id, "error", "not-allowed", false);
@@ -127,11 +135,11 @@ final class Voice {
 
     private void begin(int id, String lang, boolean interimResults) {
         if (session != 0 && session != id) finish("aborted");   // one session at a time
-        if (activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        if (!activity.hasMic()) {
             pendingId = id;
             pendingLang = lang;
             pendingInterim = interimResults;
-            activity.requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+            activity.askForMic();
             return;
         }
         session = id;
@@ -261,7 +269,8 @@ final class Voice {
 
     /**
      * Runs in YouTube's pages before their own code: always lists a microphone (YouTube shows its mic button only when
-     * enumerateDevices has an "audioinput"), then defines the Web Speech API on top of the bridge. Safe to run twice.
+     * enumerateDevices has an "audioinput"), answers the microphone permission check with "granted" or "prompt" (never
+     * "denied", which hides the button; pressing it asks Android), then defines the Web Speech API on top of the bridge. Safe to run twice.
      */
     static final String POLYFILL = "(function(){"
             + "var md=navigator.mediaDevices;"
@@ -271,6 +280,12 @@ final class Voice {
             + "l.push({deviceId:'default',groupId:'default',kind:'audioinput',label:'Remote microphone',"
             + "toJSON:function(){return {deviceId:'default',groupId:'default',kind:'audioinput',label:'Remote microphone'};}});"
             + "return l;});};}"
+            + "})();(function(){"
+            + "var P=navigator.permissions;if(!P||!P.query||P.__myytMic)return;P.__myytMic=1;var q=P.query.bind(P);"
+            + "P.query=function(d){var n=d&&d.name;if(n!=='microphone'&&n!=='audio_capture'&&n!=='speech')return q(d);"
+            + "var B=window." + BRIDGE + ",s=(B&&B.hasMic())?'granted':'prompt';"
+            + "var o=typeof EventTarget==='function'?new EventTarget():{addEventListener:function(){},removeEventListener:function(){}};"
+            + "o.name=n;o.state=s;o.status=s;o.onchange=null;return Promise.resolve(o);};"
             + "})();(function(){"
             + "if(window.__myytVoice||!window." + BRIDGE + ")return;"
             + "var B=window." + BRIDGE + ",live={},next=1;"
