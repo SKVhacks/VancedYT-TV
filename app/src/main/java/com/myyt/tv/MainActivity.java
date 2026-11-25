@@ -32,11 +32,16 @@ import java.util.Map;
 public final class MainActivity extends Activity {
     static final String HOME_URL = "https://www.youtube.com/tv";
     /**
-     * YouTube's server now sends the Samsung (Tizen) identity a "force_voice_incapable" flag, which hides the mic button
-     * on the search screen whatever the device has. These switches in the address are read by YouTube's TV app before
-     * that flag (tested 2026-11-25): the mic button shows again and records through the Web Speech API (Voice.POLYFILL).
+     * Switches in the address that YouTube's TV app reads before the server's settings for this identity (tested
+     * 2026-11-25). The server sends "force_voice_incapable", which hides the mic button on the search screen: the first
+     * two bring it back, recording through the Web Speech API (Voice.POLYFILL). It also sends
+     * "force_memory_saving_mode", which drops the gradients behind cards and the player controls and uses small
+     * thumbnails: env_isLimitedAnimation keeps the full look with animations still off, for weak boxes.
      */
-    static final String START_URL = HOME_URL + "?env_enableSoftMic=true&env_enableWebSpeech=true";
+    static final String START_URL = HOME_URL + "?env_enableSoftMic=true&env_enableWebSpeech=true&env_isLimitedAnimation=true";
+
+    /** Runs in YouTube's pages before their own code: decoder/HDR answers and the look (MediaCaps), then voice. */
+    static final String PAGE_SCRIPT = MediaCaps.SCRIPT + "\n" + Voice.POLYFILL;
     /**
      * youtube.com/tv only opens for TV browsers; others are sent to the desktop site. A Samsung (Tizen) identity gets
      * clear (non-DRM) streams that start at once with the ad scriptlets on. The official Android TV (Cobalt) identity
@@ -86,6 +91,7 @@ public final class MainActivity extends Activity {
         // Voice search: the page's mic button and the remote's mic key (see Voice).
         voice = new Voice(this, web);
         web.addJavascriptInterface(voice, Voice.BRIDGE);
+        web.addJavascriptInterface(new MediaCaps(this), MediaCaps.BRIDGE);
         installVoiceScript();
 
         web.setWebViewClient(new Client());
@@ -192,7 +198,7 @@ public final class MainActivity extends Activity {
     private void installVoiceScript() {
         if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
             try {
-                androidx.webkit.WebViewCompat.addDocumentStartJavaScript(web, Voice.POLYFILL,
+                androidx.webkit.WebViewCompat.addDocumentStartJavaScript(web, PAGE_SCRIPT,
                         java.util.Collections.singleton("https://www.youtube.com"));
                 voiceStartScript = true;
             } catch (RuntimeException ignored) {
@@ -381,7 +387,7 @@ public final class MainActivity extends Activity {
                 if (!script.isEmpty()) view.evaluateJavascript(script, null);
             }
             if (!voiceStartScript && url != null && url.startsWith("https://www.youtube.com")) {
-                view.evaluateJavascript(Voice.POLYFILL, null);
+                view.evaluateJavascript(PAGE_SCRIPT, null);
             }
         }
 
@@ -390,7 +396,7 @@ public final class MainActivity extends Activity {
             pageUrl = url;
             injectHideCss(url);
             if (!voiceStartScript && url != null && url.startsWith("https://www.youtube.com")) {
-                view.evaluateJavascript(Voice.POLYFILL, null);
+                view.evaluateJavascript(PAGE_SCRIPT, null);
             }
         }
 
