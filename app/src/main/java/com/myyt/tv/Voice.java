@@ -95,11 +95,6 @@ final class Voice {
         recognizer = null;
     }
 
-    /** True while a search started by the page's mic button waits for the permission (a reload would lose it). */
-    boolean pageIsWaitingForMic() {
-        return pendingId > 0;
-    }
-
     /** The answer to the microphone dialog; returns true if a voice search was waiting for it. */
     boolean onMicAnswer(boolean granted) {
         int id = pendingId;
@@ -256,7 +251,7 @@ final class Voice {
     /** YouTube's TV app routes by the address fragment; this opens its search results for the text. */
     static void openSearch(WebView web, String text) {
         web.evaluateJavascript("(function(q){if(location.href.indexOf('youtube.com/tv')<0){"
-                + "location.href='https://www.youtube.com/tv#/search?q='+encodeURIComponent(q);}"
+                + "location.href='" + MainActivity.START_URL + "#/search?q='+encodeURIComponent(q);}"
                 + "else{location.hash='#/search?q='+encodeURIComponent(q);}})(" + JSONObject.quote(text) + ");", null);
     }
 
