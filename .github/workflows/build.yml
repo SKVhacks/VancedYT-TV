@@ -28,7 +28,7 @@ jobs:
       # The ad-block engine (Brave's adblock-rust over JNI), built from engine/ for 32-bit ARM.
       - name: Rust toolchain
         run: |
-          rustup target add armv7-linux-androideabi
+          rustup target add armv7-linux-androideabi aarch64-linux-android
           cargo install cargo-ndk --locked
 
       - uses: actions/cache@v4
